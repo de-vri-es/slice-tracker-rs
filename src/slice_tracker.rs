@@ -46,7 +46,7 @@ impl<'a, B> SourceStorage<'a, B> where B: ?Sized {
 	}
 }
 
-/// Read a file into a string.
+/// Read a text file (UTF-8) into a string.
 fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> {
 	let mut file = File::open(path)?;
 	let mut data = String::new();
@@ -54,57 +54,57 @@ fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> 
 	return Ok(data);
 }
 
-/// Tracker for strings with metadata.
+/// Tracker for slices with metadata.
 ///
 /// The tracker can take ownership or store references if their lifetime is long enough.
-/// Each string added to the tracker has some source information attached to it.
-/// This information can later be retrieved from the tracker with a (partial) &str.
+/// Each slice added to the tracker has some source information attached to it.
+/// This information can later be retrieved from the tracker with a subslice of the tracked slice.
 ///
-/// The tracker can not track empty strings,
-/// and it can not look up information for empty string slices.
+/// The tracker can not track empty slices, and it can not look up information for empty slices.
 pub struct SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>>>
 }
 
 impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
-	/// Create a new string tracker.
+	/// Create a new slice tracker.
 	pub fn new() -> Self {
 		SliceTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
 	}
 
 	/// Insert a borrowed reference in the tracker.
 	///
-	/// Fails if the string is empty or if it is already tracked.
+	/// Fails if the slice is empty or if (parts of) it are already tracked.
 	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
 		Ok(self.insert_with_source(Cow::Borrowed(data.as_ref()), source)?)
 	}
 
-	/// Move a string into the tracker.
+	/// Move an owned slice into the tracker.
+	/// The tracker takes ownership of the data.
 	///
-	/// Fails if the string is empty.
+	/// Fails if the slice is empty.
 	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
 		// New string can't be in the map yet, but empty string can not be inserted.
 		Ok(self.insert_with_source(Cow::Owned(data.into()), source)?)
 	}
 
-	/// Check if a string slice is tracked.
+	/// Check if a slice is tracked.
 	pub fn is_tracked(&self, data: &B) -> bool {
 		self.get_entry(data).is_some()
 	}
 
-	/// Get the whole tracked slice and source information for a string slice.
+	/// Get the whole tracked slice and source information for a (partial) slice.
 	pub fn get(&self, data: &B) -> Option<(&B, Source<B>)> {
 		self.get_entry(data).map(|entry| {
 			(entry.data.as_ref(), entry.source.to_source())
 		})
 	}
 
-	/// Get the source information for a string slice.
+	/// Get the source information for a (partial) slice.
 	pub fn get_source(&self, data: &B) -> Option<Source<B>> {
 		self.get_entry(data).map(|entry| entry.source.to_source())
 	}
 
-	/// Get the whole tracked slice for a string slice.
+	/// Get the whole tracked slice for a (partial) slice.
 	pub fn get_whole_slice(&self, data: &B) -> Option<&B> {
 		self.get_entry(data).map(|entry| entry.data.as_ref())
 	}
@@ -133,9 +133,9 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		Some(&value)
 	}
 
-	/// Get the entry tracking a string.
+	/// Get the tracking entry for a slice.
 	fn get_entry(&self, data: &B) -> Option<&Entry<B>> {
-		// Empty strings aren't tracked.
+		// Empty slices can not be tracked.
 		// They can't be distuingished from str_a[end..end] or str_b[0..0],
 		// if str_a and str_b directly follow eachother in memory.
 		if data.is_empty() { return None }
@@ -149,7 +149,7 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		}
 	}
 
-	/// Check if the given data has overlap with anything in the string tracker.
+	/// Check if the given slice has overlap with anything in the slice tracker.
 	fn has_overlap<S: ?Sized + AsRef<B>>(&self, data: &S) -> bool {
 		let data = data.as_ref();
 
@@ -167,7 +167,7 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		conflict.data.end_ptr() > data.start_ptr()
 	}
 
-	/// Insert data with source information without checking if the data is already present.
+	/// Insert a slice with source information without checking if the data is already present.
 	unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, source: SourceStorage<'a, B>) -> &B {
 		// Insert the data itself.
 		match self.map_mut().entry(data.start_ptr()) {
@@ -176,7 +176,8 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		}
 	}
 
-	/// Like insert, but convert the Source to SourceStorage only after all checks are done.
+	/// Safely insert a slice with source information.
+	/// The Source is converted to SourceStorage only after all checks are done.
 	fn insert_with_source<'path>(&self, data: Cow<'a, B>, source: Source<'a, 'path, B>) -> Result<&B, ()> {
 		// Reject empty data or data that is already (partially) tracked.
 		if data.is_empty() || self.has_overlap(&data) { return Err(()) }
