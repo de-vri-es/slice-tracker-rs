@@ -1,6 +1,6 @@
 #![feature(pointer_methods)]
 
-mod pointer_range;
+mod slice;
 mod string_tracker;
 
 pub use string_tracker::Source;

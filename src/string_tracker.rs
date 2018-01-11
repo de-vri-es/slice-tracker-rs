@@ -5,30 +5,29 @@ use std::collections::btree_map::Entry as BTreeMapEntry;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path,PathBuf};
-use std::str::from_utf8_unchecked;
 
-use super::pointer_range::PointerRange;
+use super::slice::Slice;
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub enum Source<'a, 'path> {
+pub enum Source<'a, 'path, B> where B: 'a + ?Sized {
 	Other,
-	ExpandedFrom(&'a str),
+	ExpandedFrom(&'a B),
 	File(&'path Path),
 }
 
-enum SourceStorage<'a> {
+enum SourceStorage<'a, B> where B: 'a + ?Sized {
 	Other,
-	ExpandedFrom(&'a str),
+	ExpandedFrom(&'a B),
 	File(PathBuf),
 }
 
-pub struct Entry<'a> {
-	data: Cow<'a, [u8]>,
-	source: SourceStorage<'a>,
+pub struct Entry<'a, B> where B: 'a + ?Sized + ToOwned {
+	data: Cow<'a, B>,
+	source: SourceStorage<'a, B>,
 }
 
-impl<'a, 'path> Source<'a, 'path> {
-	fn to_storage(self) -> SourceStorage<'a> {
+impl<'a, 'path, B> Source<'a, 'path, B> where B: ?Sized {
+	fn to_storage(self) -> SourceStorage<'a, B> {
 		match self {
 			Source::Other                => SourceStorage::Other,
 			Source::ExpandedFrom(string) => SourceStorage::ExpandedFrom(string),
@@ -37,8 +36,8 @@ impl<'a, 'path> Source<'a, 'path> {
 	}
 }
 
-impl<'a> SourceStorage<'a> {
-	fn to_source<'b>(&'b self) -> Source<'a, 'b> {
+impl<'a, B> SourceStorage<'a, B> where B: ?Sized {
+	fn to_source<'b>(&'b self) -> Source<'a, 'b, B> {
 		match self {
 			&SourceStorage::Other                    => Source::Other,
 			&SourceStorage::ExpandedFrom(ref string) => Source::ExpandedFrom(string),
@@ -63,92 +62,95 @@ fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> 
 ///
 /// The tracker can not track empty strings,
 /// and it can not look up information for empty string slices.
-#[derive(Default)]
-pub struct StringTracker<'a> {
-	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const u8, Entry<'a>>>
+pub struct StringTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
+	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>>>
 }
 
-impl<'a> StringTracker<'a> {
-	pub fn new() -> Self { Self::default() }
+impl<'a, B> StringTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
+	/// Create a new string tracker.
+	pub fn new() -> Self {
+		StringTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
+	}
+
 	/// Insert a borrowed reference in the tracker.
 	///
 	/// Fails if the string is empty or if it is already tracked.
-	pub fn insert_borrow<'path, S: ?Sized + AsRef<str>>(&self, data: &'a S, source: Source<'a, 'path>) -> Result<&str, ()> {
-		let slice = self.insert_with_source(Cow::Borrowed(data.as_ref().as_bytes()), source)?;
-		Ok(unsafe { from_utf8_unchecked(slice) })
+	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
+		Ok(self.insert_with_source(Cow::Borrowed(data.as_ref()), source)?)
 	}
 
 	/// Move a string into the tracker.
 	///
 	/// Fails if the string is empty.
-	pub fn insert_move<'path, S: Into<String>>(&self, data: S, source: Source<'a, 'path>) -> Result<&str, ()> {
+	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
 		// New string can't be in the map yet, but empty string can not be inserted.
-		let slice = self.insert_with_source(Cow::Owned(data.into().into_bytes()), source)?;
-		Ok(unsafe { from_utf8_unchecked(slice) })
-	}
-
-	/// Read a file and insert it into the tracker.
-	///
-	/// Fails if reading the file fails, or if the file is empty.
-	pub fn insert_file<P: Into<PathBuf>>(&self, path: P) -> std::io::Result<&str> {
-		let path = path.into();
-		let data = read_text_file(&path)?;
-		if data.is_empty() {
-			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
-		} else {
-			Ok(unsafe { from_utf8_unchecked(self.insert_unsafe(Cow::Owned(data.into_bytes()), SourceStorage::File(path))) })
-		}
+		Ok(self.insert_with_source(Cow::Owned(data.into()), source)?)
 	}
 
 	/// Check if a string slice is tracked.
-	pub fn is_tracked(&self, data: &str) -> bool {
+	pub fn is_tracked(&self, data: &B) -> bool {
 		self.get_entry(data).is_some()
 	}
 
 	/// Get the whole tracked slice and source information for a string slice.
-	pub fn get(&self, data: &str) -> Option<(&str, Source)> {
+	pub fn get(&self, data: &B) -> Option<(&B, Source<B>)> {
 		self.get_entry(data).map(|entry| {
-			let string = unsafe { from_utf8_unchecked(&entry.data) };
-			(string, entry.source.to_source())
+			(entry.data.as_ref(), entry.source.to_source())
 		})
 	}
 
 	/// Get the source information for a string slice.
-	pub fn get_source(&self, data: &str) -> Option<Source> {
+	pub fn get_source(&self, data: &B) -> Option<Source<B>> {
 		self.get_entry(data).map(|entry| entry.source.to_source())
 	}
 
 	/// Get the whole tracked slice for a string slice.
-	pub fn get_whole_slice(&self, data: &str) -> Option<&str> {
-		self.get_entry(data).map(|entry| unsafe { from_utf8_unchecked(&entry.data) })
+	pub fn get_whole_slice(&self, data: &B) -> Option<&B> {
+		self.get_entry(data).map(|entry| entry.data.as_ref())
 	}
 
 // private:
 
 	/// Get the map from the UnsafeCell.
-	fn map(&self) -> &std::collections::BTreeMap<*const u8, Entry<'a>> {
+	fn map(&self) -> &std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>> {
 		unsafe { &*self.map.get() }
 	}
 
 	/// Get the map from the UnsafeCell as mutable map.
-	fn map_mut(&self) -> &mut std::collections::BTreeMap<*const u8, Entry<'a>> {
+	fn map_mut(&self) -> &mut std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>> {
 		unsafe { &mut *self.map.get() }
 	}
 
 	/// Find the first entry with start_ptr <= the given bound.
-	fn first_entry_at_or_before(&self, bound: *const u8) -> Option<&Entry<'a>> {
+	fn first_entry_at_or_before(&self, bound: *const B::PtrType) -> Option<&Entry<B>> {
 		let (_key, value) = self.map().range((Unbounded, Included(bound))).next_back()?;
 		Some(&value)
 	}
 
 	/// Find the first entry with start_ptr < the given bound.
-	fn first_entry_before(&self, bound: *const u8) -> Option<&Entry<'a>> {
+	fn first_entry_before(&self, bound: *const B::PtrType) -> Option<&Entry<B>> {
 		let (_key, value) = self.map().range((Unbounded, Excluded(bound))).next_back()?;
 		Some(&value)
 	}
 
+	/// Get the entry tracking a string.
+	fn get_entry(&self, data: &B) -> Option<&Entry<B>> {
+		// Empty strings aren't tracked.
+		// They can't be distuingished from str_a[end..end] or str_b[0..0],
+		// if str_a and str_b directly follow eachother in memory.
+		if data.is_empty() { return None }
+
+		// Get the last element where start_ptr <= data.start_ptr
+		let entry = self.first_entry_at_or_before(data.start_ptr())?;
+		if data.end_ptr() <= entry.data.end_ptr() {
+			Some(entry)
+		} else {
+			None
+		}
+	}
+
 	/// Check if the given data has overlap with anything in the string tracker.
-	fn has_overlap<S: ?Sized + AsRef<[u8]>>(&self, data: &S) -> bool {
+	fn has_overlap<S: ?Sized + AsRef<B>>(&self, data: &S) -> bool {
 		let data = data.as_ref();
 
 		// Empty slices can't overlap with anything, even if their start pointer is tracked.
@@ -165,24 +167,8 @@ impl<'a> StringTracker<'a> {
 		conflict.data.end_ptr() > data.start_ptr()
 	}
 
-	/// Get the entry tracking a string.
-	fn get_entry(&self, data: &str) -> Option<&Entry> {
-		// Empty strings aren't tracked.
-		// They can't be distuingished from str_a[end..end] or str_b[0..0],
-		// if str_a and str_b directly follow eachother in memory.
-		if data.is_empty() { return None }
-
-		// Get the last element where start_ptr <= data.start_ptr
-		let entry = self.first_entry_at_or_before(data.start_ptr())?;
-		if data.end_ptr() <= entry.data.end_ptr() {
-			Some(entry)
-		} else {
-			None
-		}
-	}
-
 	/// Insert data with source information without checking if the data is already present.
-	unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, [u8]>, source: SourceStorage<'a>) -> &[u8] {
+	unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, source: SourceStorage<'a, B>) -> &B {
 		// Insert the data itself.
 		match self.map_mut().entry(data.start_ptr()) {
 			BTreeMapEntry::Vacant(x)   => x.insert(Entry{data, source}).data.as_ref(),
@@ -191,11 +177,30 @@ impl<'a> StringTracker<'a> {
 	}
 
 	/// Like insert, but convert the Source to SourceStorage only after all checks are done.
-	fn insert_with_source<'path>(&self, data: Cow<'a, [u8]>, source: Source<'a, 'path>) -> Result<&[u8], ()> {
+	fn insert_with_source<'path>(&self, data: Cow<'a, B>, source: Source<'a, 'path, B>) -> Result<&B, ()> {
 		// Reject empty data or data that is already (partially) tracked.
-		if data.is_empty() || self.has_overlap(data.as_ref()) { return Err(()) }
+		if data.is_empty() || self.has_overlap(&data) { return Err(()) }
 		Ok(unsafe { self.insert_unsafe(data, source.to_storage()) })
 	}
+}
+
+impl<'a> StringTracker<'a, str> {
+	/// Read a file and insert it into the tracker.
+	///
+	/// Fails if reading the file fails, or if the file is empty.
+	pub fn insert_file<P: Into<PathBuf>>(&self, path: P) -> std::io::Result<&str> {
+		let path = path.into();
+		let data = read_text_file(&path)?;
+		if data.is_empty() {
+			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
+		} else {
+			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), SourceStorage::File(path)) })
+		}
+	}
+}
+
+impl<'a, B> Default for StringTracker<'a, B> where B: ?Sized + ToOwned + Slice {
+	fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
