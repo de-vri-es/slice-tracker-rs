@@ -2,89 +2,61 @@ use std;
 use std::borrow::Cow;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::btree_map::Entry as BTreeMapEntry;
-use std::fs::File;
-use std::io::Read;
-use std::path::{Path,PathBuf};
 
 use super::slice::Slice;
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub enum Source<'a, 'path, B> where B: 'a + ?Sized {
-	Other,
-	ExpandedFrom(&'a B),
-	File(&'path Path),
-}
-
-enum SourceStorage<'a, B> where B: 'a + ?Sized {
-	Other,
-	ExpandedFrom(&'a B),
-	File(PathBuf),
-}
-
-pub struct Entry<'a, B> where B: 'a + ?Sized + ToOwned {
+pub struct Entry<'a, B, M> where B: 'a + ?Sized + ToOwned {
 	data: Cow<'a, B>,
-	source: SourceStorage<'a, B>,
-}
-
-impl<'a, 'path, B> Source<'a, 'path, B> where B: ?Sized {
-	fn to_storage(self) -> SourceStorage<'a, B> {
-		match self {
-			Source::Other                => SourceStorage::Other,
-			Source::ExpandedFrom(string) => SourceStorage::ExpandedFrom(string),
-			Source::File(path)           => SourceStorage::File(path.to_owned()),
-		}
-	}
-}
-
-impl<'a, B> SourceStorage<'a, B> where B: ?Sized {
-	fn to_source<'b>(&'b self) -> Source<'a, 'b, B> {
-		match self {
-			&SourceStorage::Other                    => Source::Other,
-			&SourceStorage::ExpandedFrom(ref string) => Source::ExpandedFrom(string),
-			&SourceStorage::File(ref path)           => Source::File(path),
-		}
-	}
-}
-
-/// Read a text file (UTF-8) into a string.
-fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> {
-	let mut file = File::open(path)?;
-	let mut data = String::new();
-	file.read_to_string(&mut data)?;
-	return Ok(data);
+	meta: M,
 }
 
 /// Tracker for slices with metadata.
 ///
 /// The tracker can take ownership or store references if their lifetime is long enough.
-/// Each slice added to the tracker has some source information attached to it.
+/// Each slice added to the tracker has some metadata attached to it.
 /// This information can later be retrieved from the tracker with a subslice of the tracked slice.
 ///
 /// The tracker can not track empty slices, and it can not look up information for empty slices.
-pub struct SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
-	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>>>
+pub struct SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
+	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B, M>>>
 }
 
-impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
+impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	/// Create a new slice tracker.
 	pub fn new() -> Self {
 		SliceTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
 	}
 
+	/// Insert a slice with metadata without checking if the data is already present.
+	pub unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, meta: impl Into<M>) -> &B {
+		// Insert the data itself.
+		match self.map_mut().entry(data.start_ptr()) {
+			BTreeMapEntry::Vacant(x)   => x.insert(Entry{data, meta: meta.into()}).data.as_ref(),
+			BTreeMapEntry::Occupied(_) => unreachable!(),
+		}
+	}
+
+	/// Safely insert a slice with metadata.
+	pub fn insert<'path>(&self, data: Cow<'a, B>, meta: impl Into<M>) -> Result<&B, ()> {
+		// Reject empty data or data that is already (partially) tracked.
+		if data.is_empty() || self.has_overlap(&data) { return Err(()) }
+		Ok(unsafe { self.insert_unsafe(data, meta) })
+	}
+
 	/// Insert a borrowed reference in the tracker.
 	///
 	/// Fails if the slice is empty or if (parts of) it are already tracked.
-	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
-		Ok(self.insert_with_source(Cow::Borrowed(data.as_ref()), source)?)
+	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, meta: impl Into<M>) -> Result<&B, ()> {
+		self.insert(Cow::Borrowed(data.as_ref()), meta)
 	}
 
 	/// Move an owned slice into the tracker.
 	/// The tracker takes ownership of the data.
 	///
 	/// Fails if the slice is empty.
-	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, source: Source<'a, 'path, B>) -> Result<&B, ()> {
-		// New string can't be in the map yet, but empty string can not be inserted.
-		Ok(self.insert_with_source(Cow::Owned(data.into()), source)?)
+	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, meta: impl Into<M>) -> Result<&B, ()> {
+		// New owned slices can't be in the map yet, but empty slices can't be inserted.
+		self.insert(Cow::Owned(data.into()), meta)
 	}
 
 	/// Check if a slice is tracked.
@@ -92,49 +64,49 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		self.get_entry(data).is_some()
 	}
 
-	/// Get the whole tracked slice and source information for a (partial) slice.
-	pub fn get(&self, data: &B) -> Option<(&B, Source<B>)> {
+	/// Get the whole tracked slice and metadata for a (partial) slice.
+	pub fn get(&self, data: &B) -> Option<(&B, &M)> {
 		self.get_entry(data).map(|entry| {
-			(entry.data.as_ref(), entry.source.to_source())
+			(entry.data.as_ref(), &entry.meta)
 		})
 	}
 
-	/// Get the source information for a (partial) slice.
-	pub fn get_source(&self, data: &B) -> Option<Source<B>> {
-		self.get_entry(data).map(|entry| entry.source.to_source())
+	/// Get the metadata for a (partial) slice.
+	pub fn metadata(&self, data: &B) -> Option<&M> {
+		self.get_entry(data).map(|entry| &entry.meta)
 	}
 
 	/// Get the whole tracked slice for a (partial) slice.
-	pub fn get_whole_slice(&self, data: &B) -> Option<&B> {
+	pub fn whole_slice(&self, data: &B) -> Option<&B> {
 		self.get_entry(data).map(|entry| entry.data.as_ref())
 	}
 
 // private:
 
 	/// Get the map from the UnsafeCell.
-	fn map(&self) -> &std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>> {
+	fn map(&self) -> &std::collections::BTreeMap<*const B::PtrType, Entry<'a, B, M>> {
 		unsafe { &*self.map.get() }
 	}
 
 	/// Get the map from the UnsafeCell as mutable map.
-	fn map_mut(&self) -> &mut std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>> {
+	fn map_mut(&self) -> &mut std::collections::BTreeMap<*const B::PtrType, Entry<'a, B, M>> {
 		unsafe { &mut *self.map.get() }
 	}
 
 	/// Find the first entry with start_ptr <= the given bound.
-	fn first_entry_at_or_before(&self, bound: *const B::PtrType) -> Option<&Entry<B>> {
+	fn first_entry_at_or_before(&self, bound: *const B::PtrType) -> Option<&Entry<B, M>> {
 		let (_key, value) = self.map().range((Unbounded, Included(bound))).next_back()?;
 		Some(&value)
 	}
 
 	/// Find the first entry with start_ptr < the given bound.
-	fn first_entry_before(&self, bound: *const B::PtrType) -> Option<&Entry<B>> {
+	fn first_entry_before(&self, bound: *const B::PtrType) -> Option<&Entry<B, M>> {
 		let (_key, value) = self.map().range((Unbounded, Excluded(bound))).next_back()?;
 		Some(&value)
 	}
 
 	/// Get the tracking entry for a slice.
-	fn get_entry(&self, data: &B) -> Option<&Entry<B>> {
+	fn get_entry(&self, data: &B) -> Option<&Entry<B, M>> {
 		// Empty slices can not be tracked.
 		// They can't be distuingished from str_a[end..end] or str_b[0..0],
 		// if str_a and str_b directly follow eachother in memory.
@@ -166,41 +138,9 @@ impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 		// Though end is one-past the end, so end == start is also okay.
 		conflict.data.end_ptr() > data.start_ptr()
 	}
-
-	/// Insert a slice with source information without checking if the data is already present.
-	unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, source: SourceStorage<'a, B>) -> &B {
-		// Insert the data itself.
-		match self.map_mut().entry(data.start_ptr()) {
-			BTreeMapEntry::Vacant(x)   => x.insert(Entry{data, source}).data.as_ref(),
-			BTreeMapEntry::Occupied(_) => unreachable!(),
-		}
-	}
-
-	/// Safely insert a slice with source information.
-	/// The Source is converted to SourceStorage only after all checks are done.
-	fn insert_with_source<'path>(&self, data: Cow<'a, B>, source: Source<'a, 'path, B>) -> Result<&B, ()> {
-		// Reject empty data or data that is already (partially) tracked.
-		if data.is_empty() || self.has_overlap(&data) { return Err(()) }
-		Ok(unsafe { self.insert_unsafe(data, source.to_storage()) })
-	}
 }
 
-impl<'a> SliceTracker<'a, str> {
-	/// Read a file and insert it into the tracker.
-	///
-	/// Fails if reading the file fails, or if the file is empty.
-	pub fn insert_file<P: Into<PathBuf>>(&self, path: P) -> std::io::Result<&str> {
-		let path = path.into();
-		let data = read_text_file(&path)?;
-		if data.is_empty() {
-			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
-		} else {
-			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), SourceStorage::File(path)) })
-		}
-	}
-}
-
-impl<'a, B> Default for SliceTracker<'a, B> where B: ?Sized + ToOwned + Slice {
+impl<'a, B, M> Default for SliceTracker<'a, B, M> where B: ?Sized + ToOwned + Slice {
 	fn default() -> Self { Self::new() }
 }
 
@@ -210,18 +150,18 @@ mod test {
 
 	#[test]
 	fn test_insert_borrow() {
-		let pool = SliceTracker::default();
+		let pool = SliceTracker::<str, ()>::default();
 		let data = "aap noot mies";
 		let len  = data.len();
 		assert_eq!(pool.is_tracked(data), false);
 
 		// Cant insert empty string slices.
-		assert!(pool.insert_borrow("",          Source::Other).is_err());
-		assert!(pool.insert_borrow(&data[3..3], Source::Other).is_err());
+		assert!(pool.insert_borrow("",          ()).is_err());
+		assert!(pool.insert_borrow(&data[3..3], ()).is_err());
 
 		// Can insert non-empty str only once.
-		let tracked = pool.insert_borrow(data, Source::Other).unwrap();
-		assert!(pool.insert_borrow(data, Source::Other).is_err());
+		let tracked = pool.insert_borrow(data, ()).unwrap();
+		assert!(pool.insert_borrow(data, ()).is_err());
 		assert!(pool.is_tracked(data));
 
 		// is_tracked says no to empty sub-slices.
@@ -231,23 +171,22 @@ mod test {
 
 		// non-empty sub-slices give the whole slice back.
 		assert!(std::ptr::eq(data, tracked));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(data).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[0..1]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[4..8]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[len-1..len]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[..]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(data).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[0..1]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[4..8]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[len-1..len]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[..]).unwrap()));
 	}
 
 	#[test]
 	fn test_insert_part() {
-		let pool = SliceTracker::default();
+		let pool = SliceTracker::<str, ()>::default();
 		let data = "aap noot mies";
 		let noot = &data[4..8];
 		assert_eq!(noot, "noot");
 
-
 		// Adding the subslice to the pool doesn't make the whole str tracked.
-		let tracked = pool.insert_borrow(noot, Source::Other).unwrap();
+		let tracked = pool.insert_borrow(noot, ()).unwrap();
 		assert!(pool.is_tracked(noot));
 		assert!(pool.is_tracked(&data[4..8]));
 		assert!(!pool.is_tracked(data));
@@ -255,26 +194,26 @@ mod test {
 		assert!(!pool.is_tracked(&data[8.. ]));
 
 		// But we can't track the whole slice anymore now.
-		assert!(pool.insert_borrow(data, Source::Other).is_err());
+		assert!(pool.insert_borrow(data, ()).is_err());
 
 		// Subslices from the original str in the right range give the whole tracked subslice.
 		assert!(std::ptr::eq(noot, tracked));
-		assert!(std::ptr::eq(noot, pool.get_whole_slice(noot).unwrap()));
-		assert!(std::ptr::eq(noot, pool.get_whole_slice(&data[4..8]).unwrap()));
-		assert!(std::ptr::eq(noot, pool.get_whole_slice(&data[4..7]).unwrap()));
-		assert!(std::ptr::eq(noot, pool.get_whole_slice(&data[5..8]).unwrap()));
-		assert!(std::ptr::eq(noot, pool.get_whole_slice(&data[5..7]).unwrap()));
+		assert!(std::ptr::eq(noot, pool.whole_slice(noot).unwrap()));
+		assert!(std::ptr::eq(noot, pool.whole_slice(&data[4..8]).unwrap()));
+		assert!(std::ptr::eq(noot, pool.whole_slice(&data[4..7]).unwrap()));
+		assert!(std::ptr::eq(noot, pool.whole_slice(&data[5..8]).unwrap()));
+		assert!(std::ptr::eq(noot, pool.whole_slice(&data[5..7]).unwrap()));
 	}
 
 	#[test]
 	fn test_insert_move() {
-		let pool = SliceTracker::default();
+		let pool = SliceTracker::<str, ()>::default();
 
 		// Can't insert empty strings.
-		assert!(pool.insert_move("",            Source::Other).is_err());
-		assert!(pool.insert_move(String::new(), Source::Other).is_err());
+		assert!(pool.insert_move("",            ()).is_err());
+		assert!(pool.insert_move(String::new(), ()).is_err());
 
-		let data: &str = pool.insert_move("aap noot mies", Source::Other).unwrap();
+		let data: &str = pool.insert_move("aap noot mies", ()).unwrap();
 		let len = data.len();
 		assert!(pool.is_tracked(data), true);
 		assert!(!pool.is_tracked(&data[0..0]));
@@ -282,10 +221,10 @@ mod test {
 		assert!(!pool.is_tracked(&data[len..len]));
 		assert!(!pool.is_tracked("aap"));
 
-		assert!(std::ptr::eq(data, pool.get_whole_slice(data).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[0..1]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[4..8]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[len-1..len]).unwrap()));
-		assert!(std::ptr::eq(data, pool.get_whole_slice(&data[..]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(data).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[0..1]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[4..8]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[len-1..len]).unwrap()));
+		assert!(std::ptr::eq(data, pool.whole_slice(&data[..]).unwrap()));
 	}
 }
