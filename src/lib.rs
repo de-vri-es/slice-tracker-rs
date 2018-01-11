@@ -1,7 +1,7 @@
 #![feature(pointer_methods)]
 
 mod slice;
-mod string_tracker;
+mod slice_tracker;
 
-pub use string_tracker::Source;
-pub use string_tracker::StringTracker;
+pub use slice_tracker::Source;
+pub use slice_tracker::SliceTracker;

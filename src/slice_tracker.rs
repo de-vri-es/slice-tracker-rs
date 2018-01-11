@@ -62,14 +62,14 @@ fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> 
 ///
 /// The tracker can not track empty strings,
 /// and it can not look up information for empty string slices.
-pub struct StringTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
+pub struct SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B>>>
 }
 
-impl<'a, B> StringTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
+impl<'a, B> SliceTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 	/// Create a new string tracker.
 	pub fn new() -> Self {
-		StringTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
+		SliceTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
 	}
 
 	/// Insert a borrowed reference in the tracker.
@@ -184,7 +184,7 @@ impl<'a, B> StringTracker<'a, B> where B: 'a + ?Sized + ToOwned + Slice {
 	}
 }
 
-impl<'a> StringTracker<'a, str> {
+impl<'a> SliceTracker<'a, str> {
 	/// Read a file and insert it into the tracker.
 	///
 	/// Fails if reading the file fails, or if the file is empty.
@@ -199,7 +199,7 @@ impl<'a> StringTracker<'a, str> {
 	}
 }
 
-impl<'a, B> Default for StringTracker<'a, B> where B: ?Sized + ToOwned + Slice {
+impl<'a, B> Default for SliceTracker<'a, B> where B: ?Sized + ToOwned + Slice {
 	fn default() -> Self { Self::new() }
 }
 
@@ -209,7 +209,7 @@ mod test {
 
 	#[test]
 	fn test_insert_borrow() {
-		let pool = StringTracker::default();
+		let pool = SliceTracker::default();
 		let data = "aap noot mies";
 		let len  = data.len();
 		assert_eq!(pool.is_tracked(data), false);
@@ -239,7 +239,7 @@ mod test {
 
 	#[test]
 	fn test_insert_part() {
-		let pool = StringTracker::default();
+		let pool = SliceTracker::default();
 		let data = "aap noot mies";
 		let noot = &data[4..8];
 		assert_eq!(noot, "noot");
@@ -267,7 +267,7 @@ mod test {
 
 	#[test]
 	fn test_insert_move() {
-		let pool = StringTracker::default();
+		let pool = SliceTracker::default();
 
 		// Can't insert empty strings.
 		assert!(pool.insert_move("",            Source::Other).is_err());
