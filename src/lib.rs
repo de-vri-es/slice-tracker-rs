@@ -28,7 +28,10 @@ mod file_tracker;
 mod slice;
 mod slice_tracker;
 mod source_location;
+mod stable_borrow;
 
+pub use file_tracker::FileSliceTracker;
+pub use slice::Slice;
 pub use slice_tracker::SliceTracker;
 pub use source_location::SourceLocation;
-pub use file_tracker::FileSliceTracker;
+pub use stable_borrow::StableBorrow;

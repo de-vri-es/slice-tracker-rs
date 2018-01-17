@@ -26,11 +26,12 @@ use std::borrow::Cow;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 use std::collections::btree_map::Entry as BTreeMapEntry;
 
-use super::slice::Slice;
+use super::Slice;
+use super::StableBorrow;
 
-pub struct Entry<'a, B, M> where B: 'a + ?Sized + ToOwned {
+pub struct Entry<'a, B, M> where B: 'a + ?Sized + ToOwned, M: ?Sized {
 	data: Cow<'a, B>,
-	meta: M,
+	meta: Box<M>,
 }
 
 /// Tracker for slices with metadata.
@@ -40,18 +41,24 @@ pub struct Entry<'a, B, M> where B: 'a + ?Sized + ToOwned {
 /// This information can later be retrieved from the tracker with a subslice of the tracked slice.
 ///
 /// The tracker can not track empty slices, and it can not look up information for empty slices.
-pub struct SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
+pub struct SliceTracker<'a, B, M> where
+	B: 'a + ?Sized + ToOwned + Slice,
+	B::Owned: StableBorrow,
+{
 	map: std::cell::UnsafeCell<std::collections::BTreeMap<*const B::PtrType, Entry<'a, B, M>>>
 }
 
-impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
+impl<'a, B, M> SliceTracker<'a, B, M> where
+	B: 'a + ?Sized + ToOwned + Slice,
+	B::Owned: StableBorrow,
+{
 	/// Create a new slice tracker.
 	pub fn new() -> Self {
 		SliceTracker{map: std::cell::UnsafeCell::new(std::collections::BTreeMap::new())}
 	}
 
 	/// Insert a slice with metadata without checking if the data is already present.
-	pub unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, meta: impl Into<M>) -> &B {
+	pub unsafe fn insert_unsafe<'path>(&self, data: Cow<'a, B>, meta: impl Into<Box<M>>) -> &B {
 		// Insert the data itself.
 		match self.map_mut().entry(data.start_ptr()) {
 			BTreeMapEntry::Vacant(x)   => x.insert(Entry{data, meta: meta.into()}).data.as_ref(),
@@ -60,7 +67,7 @@ impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	}
 
 	/// Safely insert a slice with metadata.
-	pub fn insert<'path>(&self, data: Cow<'a, B>, meta: impl Into<M>) -> Result<&B, ()> {
+	pub fn insert<'path>(&self, data: Cow<'a, B>, meta: impl Into<Box<M>>) -> Result<&B, ()> {
 		// Reject empty data or data that is already (partially) tracked.
 		if data.is_empty() || self.has_overlap(&data) { return Err(()) }
 		Ok(unsafe { self.insert_unsafe(data, meta) })
@@ -69,7 +76,7 @@ impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	/// Insert a borrowed reference in the tracker.
 	///
 	/// Fails if the slice is empty or if (parts of) it are already tracked.
-	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, meta: impl Into<M>) -> Result<&B, ()> {
+	pub fn insert_borrow<'path, S: ?Sized + AsRef<B>>(&self, data: &'a S, meta: impl Into<Box<M>>) -> Result<&B, ()> {
 		self.insert(Cow::Borrowed(data.as_ref()), meta)
 	}
 
@@ -77,7 +84,7 @@ impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	/// The tracker takes ownership of the data.
 	///
 	/// Fails if the slice is empty.
-	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, meta: impl Into<M>) -> Result<&B, ()> {
+	pub fn insert_move<'path, S: Into<B::Owned>>(&self, data: S, meta: impl Into<Box<M>>) -> Result<&B, ()> {
 		// New owned slices can't be in the map yet, but empty slices can't be inserted.
 		self.insert(Cow::Owned(data.into()), meta)
 	}
@@ -90,13 +97,13 @@ impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	/// Get the whole tracked slice and metadata for a (partial) slice.
 	pub fn get(&self, data: &B) -> Option<(&B, &M)> {
 		self.get_entry(data).map(|entry| {
-			(entry.data.as_ref(), &entry.meta)
+			(entry.data.as_ref(), entry.meta.as_ref())
 		})
 	}
 
 	/// Get the metadata for a (partial) slice.
 	pub fn metadata(&self, data: &B) -> Option<&M> {
-		self.get_entry(data).map(|entry| &entry.meta)
+		self.get_entry(data).map(|entry| entry.meta.as_ref())
 	}
 
 	/// Get the whole tracked slice for a (partial) slice.
@@ -163,7 +170,10 @@ impl<'a, B, M> SliceTracker<'a, B, M> where B: 'a + ?Sized + ToOwned + Slice {
 	}
 }
 
-impl<'a, B, M> Default for SliceTracker<'a, B, M> where B: ?Sized + ToOwned + Slice {
+impl<'a, B, M> Default for SliceTracker<'a, B, M> where
+	B: 'a + ?Sized + ToOwned + Slice,
+	B::Owned: StableBorrow,
+{
 	fn default() -> Self { Self::new() }
 }
 
