@@ -29,6 +29,28 @@ use std::path::PathBuf;
 
 use crate::SliceTracker;
 
+pub enum SourceLocation<'a, Data>
+where
+	Data: 'a + ?Sized,
+{
+	/// The source of the data is unknown.
+	Unknown,
+
+	/// The data was expanded from other data.
+	ExpandedFrom(&'a Data),
+
+	/// The data came from a file.
+	File(FileLocation<'a>),
+}
+
+/// File location indicating the source of a slice of data.
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct FileLocation<'a> {
+	pub path: &'a Path,
+	pub line: usize,
+	pub column: usize,
+}
+
 /// Source of a slice of data.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Source<'a, Data>
@@ -38,11 +60,21 @@ where
 	/// Unknown source.
 	Unknown,
 
-	/// The data was expanded from another slice.
+	/// The data was expanded from other data.
 	ExpandedFrom(&'a Data),
 
 	/// The data was read from a file.
 	File(PathBuf),
+}
+
+/// Search for a subslice, and compute the location as (line, colum) in the larger slice.
+fn compute_location(subslice: &[u8], data: &[u8]) -> (usize, usize) {
+	let offset = subslice.as_ptr() as usize - data.as_ptr() as usize;
+	let mut line_breaks = memchr::memrchr_iter(b'\n', &data[..offset]);
+	match line_breaks.next() {
+		None => (1, offset + 1),
+		Some(i) => (line_breaks.count() + 2, offset - i),
+	}
 }
 
 /// Read a text file (UTF-8) into a string.
@@ -66,6 +98,9 @@ pub trait FileTracker<Data: ?Sized> {
 	///
 	/// Fails if reading the file fails, or if the file is empty.
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&Data>;
+
+	/// Get the source location for a slice of data.
+	fn get_source_location<'s, 'd>(&'s self, data: &'d Data) -> Option<SourceLocation<'s, Data>>;
 }
 
 impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
@@ -79,6 +114,18 @@ impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
 			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
 		}
 	}
+
+	fn get_source_location(&self, data: &str) -> Option<SourceLocation<str>> {
+		let (whole_slice, source) = self.get(data)?;
+		Some(match source {
+			Source::Unknown => SourceLocation::Unknown,
+			Source::ExpandedFrom(sources) => SourceLocation::ExpandedFrom(sources),
+			Source::File(path) => {
+				let (line, column) = compute_location(data.as_bytes(), whole_slice.as_bytes());
+				SourceLocation::File(FileLocation { path, line, column })
+			}
+		})
+	}
 }
 
 impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
@@ -91,5 +138,44 @@ impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
 			// New strings can't be in the tracker yet, so this should be safe.
 			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
 		}
+	}
+
+	fn get_source_location(&self, data: &[u8]) -> Option<SourceLocation<[u8]>> {
+		let (whole_slice, source) = self.get(data)?;
+		Some(match source {
+			Source::Unknown => SourceLocation::Unknown,
+			Source::ExpandedFrom(sources) => SourceLocation::ExpandedFrom(sources),
+			Source::File(path) => {
+				let (line, column) = compute_location(data, whole_slice);
+				SourceLocation::File(FileLocation { path, line, column })
+			}
+		})
+	}
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+	use assert2::assert;
+
+	#[test]
+	fn test_compute_location() {
+		let data = b"hello\nworld";
+
+		assert!(compute_location(&data[0..], data) == (1, 1));
+		assert!(compute_location(&data[1..], data) == (1, 2));
+		assert!(compute_location(&data[2..], data) == (1, 3));
+		assert!(compute_location(&data[3..], data) == (1, 4));
+		assert!(compute_location(&data[4..], data) == (1, 5));
+		assert!(compute_location(&data[5..], data) == (1, 6));
+		assert!(compute_location(&data[6..], data) == (2, 1));
+		assert!(compute_location(&data[7..], data) == (2, 2));
+
+		let data = b"a\r\na\n";
+		assert!(compute_location(&data[0..], data) == (1, 1));
+		assert!(compute_location(&data[1..], data) == (1, 2));
+		assert!(compute_location(&data[2..], data) == (1, 3));
+		assert!(compute_location(&data[3..], data) == (2, 1));
+		assert!(compute_location(&data[4..], data) == (2, 2));
 	}
 }
