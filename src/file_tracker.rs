@@ -24,10 +24,26 @@
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::SliceTracker;
-use crate::SourceLocation;
+
+/// Source of a slice of data.
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Source<'a, Data>
+where
+	Data: 'a + ?Sized,
+{
+	/// Unknown source.
+	Unknown,
+
+	/// The data was expanded from another slice.
+	ExpandedFrom(&'a Data),
+
+	/// The data was read from a file.
+	File(PathBuf),
+}
 
 /// Read a text file (UTF-8) into a string.
 fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> {
@@ -45,14 +61,14 @@ fn read_binary_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<Vec<u8
 	return Ok(data);
 }
 
-pub trait FileSliceTracker<B: ?Sized> {
+pub trait FileTracker<Data: ?Sized> {
 	/// Read a file and insert it into the tracker.
 	///
 	/// Fails if reading the file fails, or if the file is empty.
-	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&B>;
+	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&Data>;
 }
 
-impl<'a> FileSliceTracker<str> for SliceTracker<'a, str, SourceLocation<'a, str>> {
+impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&str> {
 		let path = path.into();
 		let data = read_text_file(&path)?;
@@ -60,12 +76,12 @@ impl<'a> FileSliceTracker<str> for SliceTracker<'a, str, SourceLocation<'a, str>
 			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
 		} else {
 			// New strings can't be in the tracker yet, so this should be safe.
-			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), SourceLocation::File(path)) })
+			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
 		}
 	}
 }
 
-impl<'a> FileSliceTracker<[u8]> for SliceTracker<'a, [u8], SourceLocation<'a, [u8]>> {
+impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&[u8]> {
 		let path = path.into();
 		let data = read_binary_file(&path)?;
@@ -73,7 +89,7 @@ impl<'a> FileSliceTracker<[u8]> for SliceTracker<'a, [u8], SourceLocation<'a, [u
 			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
 		} else {
 			// New strings can't be in the tracker yet, so this should be safe.
-			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), SourceLocation::File(path)) })
+			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
 		}
 	}
 }
