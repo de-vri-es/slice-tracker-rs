@@ -1,5 +1,3 @@
-use std;
-
 /// Marker trait to indicate that borrowed references are stable,
 /// even when the owning object is moved.
 pub unsafe trait StableBorrow {}

@@ -21,14 +21,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std;
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path,PathBuf};
 
-use super::SliceTracker;
-use super::SourceLocation;
+use crate::SliceTracker;
+use crate::SourceLocation;
 
 /// Read a text file (UTF-8) into a string.
 fn read_text_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<String> {

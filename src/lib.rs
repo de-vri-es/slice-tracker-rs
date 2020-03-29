@@ -21,17 +21,14 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#![feature(pointer_methods)]
-#![feature(universal_impl_trait)]
-
 mod file_tracker;
 mod slice;
 mod slice_tracker;
 mod source_location;
 mod stable_borrow;
 
-pub use file_tracker::FileSliceTracker;
-pub use slice::Slice;
-pub use slice_tracker::SliceTracker;
-pub use source_location::SourceLocation;
-pub use stable_borrow::StableBorrow;
+pub use self::file_tracker::FileSliceTracker;
+pub use self::slice::Slice;
+pub use self::slice_tracker::SliceTracker;
+pub use self::source_location::SourceLocation;
+pub use self::stable_borrow::StableBorrow;
