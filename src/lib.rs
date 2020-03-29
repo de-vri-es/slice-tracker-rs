@@ -28,6 +28,7 @@ mod stable_borrow;
 
 pub use self::file_tracker::FileTracker;
 pub use self::file_tracker::Source;
+pub use self::slice::BorrowSlice;
 pub use self::slice::Slice;
 pub use self::slice_tracker::SliceTracker;
 pub use self::stable_borrow::StableBorrow;

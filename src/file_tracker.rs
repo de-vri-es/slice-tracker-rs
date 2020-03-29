@@ -21,23 +21,21 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::BorrowSlice;
+use crate::Slice;
 use crate::SliceTracker;
 
-pub enum SourceLocation<'a, Data>
-where
-	Data: 'a + ?Sized,
-{
+pub enum SourceLocation<'a, T: ?Sized> {
 	/// The source of the data is unknown.
 	Unknown,
 
 	/// The data was expanded from other data.
-	ExpandedFrom(&'a Data),
+	ExpandedFrom(&'a T),
 
 	/// The data came from a file.
 	File(FileLocation<'a>),
@@ -53,15 +51,12 @@ pub struct FileLocation<'a> {
 
 /// Source of a slice of data.
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
-pub enum Source<'a, Data>
-where
-	Data: 'a + ?Sized,
-{
+pub enum Source<T: Slice + ?Sized> {
 	/// Unknown source.
 	Unknown,
 
 	/// The data was expanded from other data.
-	ExpandedFrom(&'a Data),
+	ExpandedFrom(*const T::Element, usize),
 
 	/// The data was read from a file.
 	File(PathBuf),
@@ -93,17 +88,18 @@ fn read_binary_file<P: ?Sized + AsRef<Path>>(path: &P) -> std::io::Result<Vec<u8
 	return Ok(data);
 }
 
-pub trait FileTracker<Data: ?Sized> {
+pub trait FileTracker<Data: BorrowSlice + ?Sized> {
 	/// Read a file and insert it into the tracker.
 	///
 	/// Fails if reading the file fails, or if the file is empty.
-	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&Data>;
+	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&Data::Slice>;
 
 	/// Get the source location for a slice of data.
-	fn get_source_location<'s, 'd>(&'s self, data: &'d Data) -> Option<SourceLocation<'s, Data>>;
+	fn get_source_location<'s, 'd>(&'s self, data: &'d Data::Slice) -> Option<SourceLocation<'s, Data::Slice>>;
 }
 
-impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
+impl FileTracker<String> for SliceTracker<String, Source<str>>
+{
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&str> {
 		let path = path.into();
 		let data = read_text_file(&path)?;
@@ -111,7 +107,7 @@ impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
 			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
 		} else {
 			// New strings can't be in the tracker yet, so this should be safe.
-			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
+			Ok(unsafe { self.insert_unsafe(data, Source::File(path)) })
 		}
 	}
 
@@ -119,7 +115,7 @@ impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
 		let (whole_slice, source) = self.get(data)?;
 		Some(match source {
 			Source::Unknown => SourceLocation::Unknown,
-			Source::ExpandedFrom(sources) => SourceLocation::ExpandedFrom(sources),
+			Source::ExpandedFrom(source, len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
 			Source::File(path) => {
 				let (line, column) = compute_location(data.as_bytes(), whole_slice.as_bytes());
 				SourceLocation::File(FileLocation { path, line, column })
@@ -128,7 +124,7 @@ impl<'a> FileTracker<str> for SliceTracker<'a, str, Source<'a, str>> {
 	}
 }
 
-impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
+impl<'a> FileTracker<Vec<u8>> for SliceTracker<Vec<u8>, Source<[u8]>> {
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&[u8]> {
 		let path = path.into();
 		let data = read_binary_file(&path)?;
@@ -136,7 +132,7 @@ impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
 			Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "file is empty"))
 		} else {
 			// New strings can't be in the tracker yet, so this should be safe.
-			Ok(unsafe { self.insert_unsafe(Cow::Owned(data), Source::File(path)) })
+			Ok(unsafe { self.insert_unsafe(data, Source::File(path)) })
 		}
 	}
 
@@ -144,7 +140,7 @@ impl<'a> FileTracker<[u8]> for SliceTracker<'a, [u8], Source<'a, [u8]>> {
 		let (whole_slice, source) = self.get(data)?;
 		Some(match source {
 			Source::Unknown => SourceLocation::Unknown,
-			Source::ExpandedFrom(sources) => SourceLocation::ExpandedFrom(sources),
+			Source::ExpandedFrom(source, len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
 			Source::File(path) => {
 				let (line, column) = compute_location(data, whole_slice);
 				SourceLocation::File(FileLocation { path, line, column })
