@@ -24,11 +24,11 @@
 pub trait Slice {
 	type PtrType;
 
-	fn len(&self)       -> usize;
-	fn is_empty(&self)  -> bool;
+	fn len(&self) -> usize;
+	fn is_empty(&self) -> bool;
 	fn start_ptr(&self) -> *const Self::PtrType;
 
-	fn end_ptr(&self)   -> *const Self::PtrType {
+	fn end_ptr(&self) -> *const Self::PtrType {
 		unsafe { self.start_ptr().add(self.len()) }
 	}
 }
