@@ -115,7 +115,7 @@ impl FileTracker<String> for SliceTracker<String, Source<str>>
 		let (whole_slice, source) = self.get(data)?;
 		Some(match source {
 			Source::Unknown => SourceLocation::Unknown,
-			Source::ExpandedFrom(source, len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
+			Source::ExpandedFrom(_source, _len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
 			Source::File(path) => {
 				let (line, column) = compute_location(data.as_bytes(), whole_slice.as_bytes());
 				SourceLocation::File(FileLocation { path, line, column })
@@ -140,7 +140,7 @@ impl<'a> FileTracker<Vec<u8>> for SliceTracker<Vec<u8>, Source<[u8]>> {
 		let (whole_slice, source) = self.get(data)?;
 		Some(match source {
 			Source::Unknown => SourceLocation::Unknown,
-			Source::ExpandedFrom(source, len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
+			Source::ExpandedFrom(_source, _len) => unimplemented!(), //SourceLocation::ExpandedFrom(sources),
 			Source::File(path) => {
 				let (line, column) = compute_location(data, whole_slice);
 				SourceLocation::File(FileLocation { path, line, column })
