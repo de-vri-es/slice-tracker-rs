@@ -21,8 +21,9 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use std::collections::BTreeMap;
+use std::cell::UnsafeCell;
 use std::collections::btree_map;
+use std::collections::BTreeMap;
 use std::collections::Bound::{Excluded, Included, Unbounded};
 
 use super::BorrowSlice;
@@ -51,7 +52,7 @@ pub struct SliceTracker<Data, Metadata>
 where
 	Data: BorrowSlice + StableBorrow,
 {
-	map: std::cell::UnsafeCell<BTreeMap<*const <Data::Slice as Slice>::Element, Entry<Data, Metadata>>>,
+	map: UnsafeCell<BTreeMap<*const <Data::Slice as Slice>::Element, Entry<Data, Metadata>>>,
 }
 
 impl<Data, Metadata> Default for SliceTracker<Data, Metadata>
@@ -70,7 +71,7 @@ where
 	/// Create a new slice tracker.
 	pub fn new() -> Self {
 		Self {
-			map: std::cell::UnsafeCell::new(BTreeMap::new()),
+			map: UnsafeCell::new(BTreeMap::new()),
 		}
 	}
 
@@ -78,10 +79,13 @@ where
 	pub unsafe fn insert_unsafe<'path>(&self, data: Data, meta: impl Into<Box<Metadata>>) -> &Data::Slice {
 		// Insert the data itself.
 		match self.map_mut().entry(data.start_ptr()) {
-			btree_map::Entry::Vacant(x) => &x.insert(Entry {
-				data,
-				meta: meta.into(),
-			}).data.borrow_slice(),
+			btree_map::Entry::Vacant(x) => &x
+				.insert(Entry {
+					data,
+					meta: meta.into(),
+				})
+				.data
+				.borrow_slice(),
 			btree_map::Entry::Occupied(_) => unreachable!(),
 		}
 	}
@@ -102,7 +106,8 @@ where
 
 	/// Get the whole tracked slice and metadata for a (partial) slice.
 	pub fn get(&self, data: &Data::Slice) -> Option<(&Data::Slice, &Metadata)> {
-		self.get_entry(data).map(|entry| (entry.data.borrow_slice(), entry.meta.as_ref()))
+		self.get_entry(data)
+			.map(|entry| (entry.data.borrow_slice(), entry.meta.as_ref()))
 	}
 
 	/// Get the metadata for a (partial) slice.

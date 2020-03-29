@@ -98,8 +98,7 @@ pub trait FileTracker<Data: BorrowSlice + ?Sized> {
 	fn get_source_location<'s, 'd>(&'s self, data: &'d Data::Slice) -> Option<SourceLocation<'s, Data::Slice>>;
 }
 
-impl FileTracker<String> for SliceTracker<String, Source<str>>
-{
+impl FileTracker<String> for SliceTracker<String, Source<str>> {
 	fn insert_file(&self, path: impl Into<PathBuf>) -> std::io::Result<&str> {
 		let path = path.into();
 		let data = read_text_file(&path)?;
